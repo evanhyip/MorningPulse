@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ========================================================
+# Project-specific data & artifacts
+# ========================================================
+data/*
+!data/.gitkeep
+
+# Optional: generated outputs or model artifacts
+outputs/
+models/*
+!models/.gitkeep
