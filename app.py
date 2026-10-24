@@ -1,123 +1,188 @@
+# app.py
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from brief_generator import generate_executive_brief
+from brief_generator import generate_executive_brief, query_cortex_chat
 from detector import detect_today_anomalies, fetch_telemetry_from_snowflake
-from logs import get_recent_system_events
 
-st.set_page_config(
-    page_title="MorningPulse | Autonomous Executive Brief",
-    page_icon="☀️",
-    layout="wide",
-)
+st.set_page_config(page_title="MorningPulse", page_icon="☀️", layout="wide")
 
-# Custom header
-st.title("☀️ MorningPulse")
-st.caption(
-    "Autonomous Enterprise Telemetry & Root-Cause Synthesis · Powered by Snowflake AI"
-)
+# --- SIDEBAR: SNOWFLAKE CORTEX SPEC CONTROLS ---
+with st.sidebar:
+    st.header("⚙️ Snowflake Cortex Settings")
+    selected_model = st.selectbox(
+        "Model",
+        options=["llama3.1-8b",
+        "llama3.1-70b",
+        "llama3.1-405b",
+        "mistral-large2",
+        "mixtral-8x7b",
+        "snowflake-arctic"],
+        index=0,
+        help="LLM routed to Snowflake AI_COMPLETE",
+    )
+    max_tokens = st.slider(
+        "Max Output Tokens",
+        min_value=128,
+        max_value=2048,
+        value=512,
+        step=64,
+        help="Ceiling on tokens returned by AI_COMPLETE",
+    )
+    temperature = st.slider(
+        "Temperature",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.2,
+        step=0.05,
+        help="Sampling temperature for deterministic/creative synthesis",
+    )
+    st.divider()
+    st.caption("Database: `MORNINGPULSE_DB.TELEMETRY`")
+    st.caption("Warehouse: `COMPUTE_WH`")
 
-# In app.py
+
+# --- DATA FETCHING & ANOMALY DETECTION ---
 @st.cache_data(ttl=600)
-def load_data():
+def load_telemetry_data() -> pd.DataFrame:
     return fetch_telemetry_from_snowflake()
 
 
-# 1. Top Section: Detected Metric Anomalies
-df = load_data()
+st.title("☀️ MorningPulse")
+st.caption(
+    "Live Warehouse Telemetry Detection & Autonomous Cortex AI Synthesis"
+)
+
+with st.spinner("Connecting to Snowflake warehouse..."):
+    try:
+        df = load_telemetry_data()
+    except Exception as e:
+        st.error(f"Failed to query Snowflake: {e}")
+        st.stop()
+
 anomalies = detect_today_anomalies(df)
 
+# --- OVERNIGHT ANOMALY METRIC CARDS ---
 st.markdown("### 🚨 Overnight Anomalies Detected")
-cols = st.columns(len(anomalies))
-
-for idx, a in enumerate(anomalies):
-    with cols[idx]:
-        st.metric(
-            label=f"{a['department']} · {a['metric_name']}",
-            value=f"{a['current_value']} {a['unit']}",
-            delta=f"{a['percent_delta']} (Z: {a['z_score']})",
-            delta_color="inverse",
-        )
-
-st.divider()
-
-# 2. Middle Section: Visualizing the Outlier
-col_chart, col_events = st.columns([3, 2])
-
-with col_chart:
-    st.subheader("📈 Telemetry Trend (Past 14 Days)")
-    df = pd.read_csv("seed_metrics.csv")
-    df["metric_date"] = pd.to_datetime(df["metric_date"])
-
-    # Filter to checkout failure rate for the visual demo
-    chart_metric = "checkout_failure_rate_pct"
-    metric_df = df[df["metric_name"] == chart_metric].tail(14)
-
-    fig = px.line(
-        metric_df,
-        x="metric_date",
-        y="metric_value",
-        markers=True,
-        title=f"Metric: {chart_metric}",
-        labels={
-            "metric_value": "Failure Rate (%)",
-            "metric_date": "Date",
-        },
+if anomalies:
+    cols = st.columns(min(len(anomalies), 4))
+    for idx, a in enumerate(anomalies):
+        with cols[idx % 4]:
+            st.metric(
+                label=f"{a['department']} · {a['metric_name']}",
+                value=f"{a['current_value']} {a['unit']}",
+                delta=f"{a['percent_delta']} (Z: {a['z_score']})",
+                delta_color="inverse",
+            )
+else:
+    st.success(
+        "All operational metrics are within nominal 14-day rolling baselines (Z < 2.5)."
     )
-    # Highlight the anomaly in red
-    fig.update_traces(
-        line_color="#2563EB", marker=dict(size=8, color="#DC2626")
-    )
-    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=40, b=20))
-    st.plotly_chart(fig, use_container_width=True)
 
-with col_events:
-    st.subheader("🪵 Cross-Referenced Logs")
-    events = get_recent_system_events()
-    for ev in events:
-        badge = "🔴" if ev["type"] == "error_trace" else "⚙️"
-        with st.expander(f"{badge} {ev['timestamp']} - {ev['service']}"):
-            st.write(f"**Type:** `{ev['type']}`")
-            st.write(f"**Message:** {ev['message']}")
+# --- TELEMETRY TREND VISUALIZER ---
+st.markdown("### 📈 Telemetry Trajectory")
+available_metrics = df["metric_name"].unique().tolist()
+default_idx = (
+    available_metrics.index("checkout_failure_rate_pct")
+    if "checkout_failure_rate_pct" in available_metrics
+    else 0
+)
 
+selected_metric = st.selectbox(
+    "Select metric to inspect:", available_metrics, index=default_idx
+)
+metric_df = (
+    df[df["metric_name"] == selected_metric]
+    .sort_values("metric_date")
+    .tail(14)
+)
+
+fig = px.line(
+    metric_df,
+    x="metric_date",
+    y="metric_value",
+    markers=True,
+    title=f"14-Day Trailing Trend: {selected_metric}",
+    labels={"metric_date": "Date", "metric_value": "Metric Value"},
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# --- EXECUTIVE BRIEFING SECTION ---
 st.divider()
+st.subheader("📋 Executive Incident Briefing")
 
-# 3. Bottom Section: Autonomous Executive Briefing
-st.subheader("📋 Executive Briefing & Incident Remediation")
+if st.button("Generate Morning Brief", type="primary"):
+    with st.spinner(
+        f"Snowflake Cortex ({selected_model}) is synthesizing telemetry..."
+    ):
+        try:
+            brief = generate_executive_brief(
+                anomalies=anomalies,
+                model=selected_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            st.session_state["brief"] = brief
+        except Exception as e:
+            st.error(f"Error calling Snowflake Cortex: {e}")
 
-if "brief" not in st.session_state:
-    st.session_state["brief"] = None
-
-col_btn, col_status = st.columns([1, 4])
-with col_btn:
-    if st.button("Generate Morning Brief", type="primary"):
-        with st.spinner("Snowflake AI_COMPLETE is synthesizing telemetry..."):
-            st.session_state["brief"] = generate_executive_brief()
-
-if st.session_state["brief"]:
-    # Render inside a clean bordered card
+if "brief" in st.session_state and st.session_state["brief"]:
     with st.container(border=True):
         st.markdown(st.session_state["brief"])
 
-    st.markdown("---")
-    st.subheader("⚡ Autonomous Action Execution")
-
-    act_col1, act_col2 = st.columns(2)
-    with act_col1:
-        if st.button(
-            "🚀 Execute Staged Rollback: checkout-service-v2.13.9",
-            use_container_width=True,
-        ):
+    st.markdown("#### ⚡ Staged Remediation Actions")
+    col_act1, col_act2 = st.columns(2)
+    with col_act1:
+        if st.button("🚨 Trigger Rollback (`checkout-service-v2.14`)"):
             st.success(
-                "Rollback PR #1042 triggered and merged via deployment pipeline."
+                "Rollback command dispatched to cluster via Kubernetes API."
             )
-    with act_col2:
-        if st.button(
-            "📢 Broadcast Status Incident Advisory to Customer Ops",
-            use_container_width=True,
-        ):
-            st.info(
-                "Advisory dispatched to #incident-payments and public status page updated."
-            )
+    with col_act2:
+        if st.button("📢 Broadcast Status Incident Advisory"):
+            st.info("Incident advisory published to company status channels.")
 
+# --- CONVERSATIONAL CORTEX AGENT (GATED BEHIND BRIEF GENERATION) ---
+st.divider()
+st.subheader("💬 Interrogate the Pulse (Live Snowflake Agent)")
+
+if not st.session_state.get("brief"):
+    st.info(
+        "🔒 **Agent Locked:** Click **Generate Morning Brief** above to synthesize telemetry before starting an investigation."
+    )
+else:
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    # Display prior conversation history
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat prompt handler
+    if prompt := st.chat_input(
+        "Ask about root causes, rollback steps, or impacts..."
+    ):
+        st.session_state["chat_history"].append(
+            {"role": "user", "content": prompt}
+        )
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner(f"Consulting Snowflake Cortex ({selected_model})..."):
+                try:
+                    agent_response = query_cortex_chat(
+                        conversation_history=st.session_state["chat_history"],
+                        anomalies=anomalies,
+                        system_brief=st.session_state["brief"],
+                        model=selected_model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    st.markdown(agent_response)
+                    st.session_state["chat_history"].append(
+                        {"role": "assistant", "content": agent_response}
+                    )
+                except Exception as e:
+                    st.error(f"Error querying Snowflake Cortex Agent: {e}")
