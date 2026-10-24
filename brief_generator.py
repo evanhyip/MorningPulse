@@ -57,7 +57,15 @@ Provide 3 immediate checklist items for engineering and customer operations.
     response = requests.post(url, headers=headers, json=payload, timeout=45)
     response.raise_for_status()
 
-    return response.json()["data"][0][0]
+    raw_text = response.json()["data"][0][0]
+
+    # Unescape the JSON string so \n becomes real line breaks and outer quotes are removed
+    try:
+        clean_text = json.loads(raw_text)
+    except Exception:
+        clean_text = raw_text.strip('"').replace(r"\n", "\n")
+
+    return clean_text
 
 
 if __name__ == "__main__":
