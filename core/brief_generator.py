@@ -2,6 +2,7 @@ import json
 import os
 import requests
 from dotenv import load_dotenv
+
 from core.detector import detect_today_anomalies
 from core.logs import get_recent_system_events
 
@@ -13,40 +14,51 @@ SNOWFLAKE_TOKEN = os.getenv("SNOWFLAKE_TOKEN")
 
 # --- 1. EXECUTIVE BRIEF GENERATOR ---
 def generate_executive_brief(
-    anomalies: list[dict] = None,
+    anomalies: dict[str, list[dict]] | list[dict] | None = None,
     model: str = "llama3.1-8b",
     max_tokens: int = 1024,
     temperature: float = 0.2,
 ) -> str:
-    """Generates the morning incident brief via Snowflake AI_COMPLETE."""
+    """Generates an executive briefing covering both operational risks and growth opportunities."""
     if anomalies is None:
         anomalies = detect_today_anomalies()
+
+    # Normalize structure if passed as a flat list
+    if isinstance(anomalies, list):
+        risks = [a for a in anomalies if a.get("type") == "risk"]
+        opportunities = [a for a in anomalies if a.get("type") == "opportunity"]
+    else:
+        risks = anomalies.get("risks", [])
+        opportunities = anomalies.get("opportunities", [])
 
     events = get_recent_system_events()
 
     raw_prompt = f"""
 You are the autonomous Chief of Staff delivering the 8:00 AM Executive Pulse.
 
-METRIC ANOMALIES DETECTED IN SNOWFLAKE:
-{json.dumps(anomalies, indent=2)}
+CRITICAL OPERATIONAL RISKS:
+{json.dumps(risks, indent=2)}
+
+POSITIVE GROWTH OPPORTUNITIES & SURGES:
+{json.dumps(opportunities, indent=2)}
 
 RECENT SYSTEM LOGS & DEPLOYMENTS:
 {json.dumps(events, indent=2)}
 
-Analyze the anomalies against the system logs. Connect the causal dots.
+Analyze the operational failures against the system deployments, but also highlight any notable growth windfalls. Connect the causal dots across engineering, finance, and product.
 
 Provide your response in clean Markdown with these exact sections:
 ### 1. Executive Summary
-A 2-sentence synthesis explaining the primary operational failure and its direct business consequence.
+A 2-sentence synthesis explaining the primary operational crisis and any counterbalancing growth wins.
 
 ### 2. Root Cause & Smoking Gun
-Quote the specific deployment, error message, and timestamp responsible.
+Quote the specific deployment, error message, and timestamp responsible for the failures.
 
-### 3. Business Impact
-Summarize the estimated financial or operational damage based on the numbers.
+### 3. Business Impact & Exposure
+Detail estimated revenue loss, refund surge, and support ticket pressure alongside customer acquisition wins.
 
 ### 4. Autonomous Action Plan
-Provide 3 immediate checklist items for engineering and customer operations.
+Provide 3 immediate checklist items for engineering rollback and customer operations triage.
 """
 
     escaped_prompt = raw_prompt.replace("'", "''")
@@ -57,7 +69,7 @@ Provide 3 immediate checklist items for engineering and customer operations.
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    
+
     statement_sql = f"""
         SELECT AI_COMPLETE(
             '{model}',
@@ -65,7 +77,7 @@ Provide 3 immediate checklist items for engineering and customer operations.
             PARSE_JSON('{{"max_tokens": {max_tokens}, "temperature": {temperature}}}')
         ) AS response;
     """
-    
+
     payload = {
         "statement": statement_sql,
         "warehouse": "COMPUTE_WH",
@@ -87,25 +99,26 @@ Provide 3 immediate checklist items for engineering and customer operations.
 # --- 2. INTERACTIVE CHAT AGENT ---
 def query_cortex_chat(
     conversation_history: list[dict],
-    anomalies: list[dict],
+    anomalies: dict[str, list[dict]] | list[dict],
     system_brief: str,
     model: str = "llama3.1-8b",
     max_tokens: int = 512,
     temperature: float = 0.2,
 ) -> str:
-    """Sends chat history and operational context to Snowflake AI_COMPLETE."""
+    """Sends chat history and dual-threat telemetry context to Snowflake AI_COMPLETE."""
     history_transcript = ""
     for turn in conversation_history[-6:]:
         role = "Executive" if turn["role"] == "user" else "Chief of Staff"
         history_transcript += f"{role}: {turn['content']}\n"
 
     system_prompt = f"""
-You are the AI Chief of Staff in MorningPulse. You previously generated this morning incident brief:
+You are the AI Chief of Staff in MorningPulse. You previously generated this morning brief:
 \"\"\"{system_brief}\"\"\"
 
-Known Anomalies: {json.dumps(anomalies)}
+Telemetry Outliers:
+{json.dumps(anomalies)}
 
-Respond concisely and directly to the executive's follow-up inquiries. Quote specific timestamps, systems, and metrics when relevant. Do not hallucinate numbers outside the known data.
+Respond concisely and directly to executive inquiries regarding root causes, financial damage, customer acquisition, or staged rollbacks. Do not hallucinate numbers outside the known data.
 
 CONVERSATION TRANSCRIPT:
 {history_transcript}
@@ -144,5 +157,5 @@ Chief of Staff:"""
 
 
 if __name__ == "__main__":
-    print("Synthesizing Executive Brief via Snowflake AI_COMPLETE...\n")
+    print("Testing Snowflake Cortex synthesis with directional anomalies...\n")
     print(generate_executive_brief())
