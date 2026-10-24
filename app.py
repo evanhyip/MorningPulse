@@ -91,6 +91,10 @@ def fetch_subscribers_data() -> list[dict]:
 
     account = os.getenv("SNOWFLAKE_ACCOUNT")
     token = os.getenv("SNOWFLAKE_TOKEN")
+    db = os.getenv("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB").strip(' "\'')
+    schema = os.getenv("SNOWFLAKE_SCHEMA", "TELEMETRY").strip(' "\'')
+    warehouse = os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH").strip(' "\'')
+
     if not account or not token:
         try:
             from core.brief_generator import get_active_mailing_list
@@ -105,13 +109,13 @@ def fetch_subscribers_data() -> list[dict]:
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    sql = """
+    sql = f"""
         SELECT full_name, email, role, is_active
-        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST
+        FROM "{db}"."{schema}"."MAILING_LIST"
         ORDER BY subscribed_at DESC;
     """
     try:
-        res = requests.post(url, headers=headers, json={"statement": sql, "warehouse": "COMPUTE_WH"}, timeout=15)
+        res = requests.post(url, headers=headers, json={"statement": sql, "warehouse": warehouse}, timeout=15)
         res.raise_for_status()
         rows = res.json().get("data", [])
         return [
@@ -177,14 +181,14 @@ with st.sidebar:
     with st.expander("⚙️ Cortex Configuration", expanded=False):
         selected_model = st.selectbox(
             "AI Model",
-            ["llama3.1-8b", "llama3.1-70b", "mistral-large2", "snowflake-arctic"],
+            ["llama3.1-70b", "llama3.1-8b", "mistral-large2", "snowflake-arctic"],
             index=0,
             help="Hosted foundational LLMs via Snowflake Cortex AI_COMPLETE",
         )
         max_tokens = st.slider("Max Output Tokens", 128, 2048, 768, 64)
         temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-        st.caption("Warehouse: `COMPUTE_WH`")
-        st.caption("Database: `MORNINGPULSE_DB.TELEMETRY`")
+        st.caption(f"Warehouse: `{os.getenv('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH')}`")
+        st.caption(f"Database: `{os.getenv('SNOWFLAKE_DATABASE', 'MORNINGPULSE_DB')}.{os.getenv('SNOWFLAKE_SCHEMA', 'TELEMETRY')}`")
 
     st.divider()
 
@@ -226,10 +230,12 @@ with st.sidebar:
 st.title("☀️ MorningPulse")
 st.caption("Enterprise Telemetry Intelligence · Powered by Snowflake Cortex")
 
+metric_count = len(df["metric_name"].unique()) if "metric_name" in df.columns else 15
+
 tab_exec, tab_cockpit, tab_subscribers = st.tabs(
     [
         "☀️ Executive Morning Pulse",
-        "📊 Company Cockpit (All 15 Metrics)",
+        f"📊 Company Cockpit (All {metric_count} Metrics)",
         "📬 Mailing List",
     ]
 )
@@ -335,10 +341,10 @@ with tab_exec:
 
 
 # ==========================================
-# TAB 2: COMPANY COCKPIT (ALL 15 CHARTS)
+# TAB 2: COMPANY COCKPIT (ALL CHARTS)
 # ==========================================
 with tab_cockpit:
-    st.markdown("### 📊 Enterprise Telemetry Cockpit (All 15 Metrics)")
+    st.markdown(f"### 📊 Enterprise Telemetry Cockpit (All {metric_count} Metrics)")
     st.caption(
         "Real-time 14-day tracking across Finance, Product, Infrastructure, and Customer Support. "
         "Outliers are automatically surfaced to the Executive Morning Pulse."
@@ -389,9 +395,6 @@ with tab_subscribers:
     )
 
     raw_subscribers = fetch_subscribers_data()
-
-    # Debug line
-    # st.write("DEBUG subscriber row:", raw_subscribers[0] if raw_subscribers else "Empty")
 
     if raw_subscribers:
         table_rows = []

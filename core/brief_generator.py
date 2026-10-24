@@ -1,395 +1,311 @@
+"""
+core/brief_generator.py
+Synthesizes executive daily briefings and powers the AI Chief of Staff
+using Snowflake AI_COMPLETE. Fully supports dynamic schema/table configuration.
+"""
+
 import json
 import os
-import requests
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
-import pandas as pd
-
-from core.detector import detect_today_anomalies
-from core.logs import get_recent_system_events
+import requests
 
 load_dotenv()
 
-SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
-SNOWFLAKE_TOKEN = os.getenv("SNOWFLAKE_TOKEN")
+
+def get_snowflake_config() -> Dict[str, str]:
+    """Resolves database, schema, and warehouse coordinates dynamically."""
+    return {
+        "account": os.getenv("SNOWFLAKE_ACCOUNT", ""),
+        "token": os.getenv("SNOWFLAKE_TOKEN", ""),
+        "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH").strip(' "\''),
+        "database": os.getenv("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB").strip(' "\''),
+        "schema": os.getenv("SNOWFLAKE_SCHEMA", "TELEMETRY").strip(' "\''),
+    }
 
 
-# --- 1. EXECUTIVE BRIEF GENERATOR ---
-def generate_executive_brief(
-    anomalies: dict[str, list[dict]] | list[dict] | None = None,
-    model: str = "llama3.1-8b",
-    max_tokens: int = 1024,
-    temperature: float = 0.2,
-) -> str:
-    """Generates an executive briefing covering both operational risks and growth opportunities."""
-    if anomalies is None:
-        anomalies = detect_today_anomalies()
+def execute_snowflake_query(sql: str) -> List[List[Any]]:
+    """Executes a SQL statement via the Snowflake Statements API."""
+    cfg = get_snowflake_config()
+    if not cfg["account"] or not cfg["token"]:
+        raise ValueError("Missing SNOWFLAKE_ACCOUNT or SNOWFLAKE_TOKEN in environment.")
 
-    # Normalize structure if passed as a flat list
-    if isinstance(anomalies, list):
-        risks = [a for a in anomalies if a.get("type") == "risk"]
-        opportunities = [a for a in anomalies if a.get("type") == "opportunity"]
+    url = f"https://{cfg['account']}.snowflakecomputing.com/api/v2/statements"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "statement": sql,
+        "warehouse": cfg["warehouse"],
+        "database": cfg["database"],
+        "schema": cfg["schema"],
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    if response.status_code != 200:
+        error_msg = response.json().get("message", response.text)
+        raise RuntimeError(f"Snowflake API error ({response.status_code}): {error_msg}")
+
+    return response.json().get("data", [])
+
+
+def clean_llm_response(raw_text: str) -> str:
+    """Decodes double-encoded JSON string literals from the Snowflake REST response."""
+    if not isinstance(raw_text, str):
+        return str(raw_text)
+
+    text = raw_text.strip()
+    if (text.startswith('"') and text.endswith('"')) or "\\n" in text:
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+    return text
+
+
+def format_anomalies_for_prompt(anomalies: Dict[str, List[Dict[str, Any]]]) -> str:
+    """Formats detected risks and opportunities into structured context for the LLM."""
+    risks = anomalies.get("risks", [])
+    opps = anomalies.get("opportunities", [])
+
+    lines = ["### CRITICAL OPERATIONAL RISKS:"]
+    if risks:
+        for r in risks:
+            unit = r.get("unit", "")
+            lines.append(
+                f"- [{r.get('department', 'General')}] {r['metric_name']}: "
+                f"Current {r['current_value']}{unit} vs Baseline {r['expected_baseline']}{unit} "
+                f"({r['percent_delta']}, Z-Score: {r['z_score']})"
+            )
     else:
-        risks = anomalies.get("risks", [])
-        opportunities = anomalies.get("opportunities", [])
+        lines.append("- No critical risks detected today.")
 
-    events = get_recent_system_events()
+    lines.append("\n### POSITIVE MOMENTUM & GROWTH OPPORTUNITIES:")
+    if opps:
+        for o in opps:
+            unit = o.get("unit", "")
+            lines.append(
+                f"- [{o.get('department', 'General')}] {o['metric_name']}: "
+                f"Current {o['current_value']}{unit} vs Baseline {o['expected_baseline']}{unit} "
+                f"({o['percent_delta']}, Z-Score: {o['z_score']})"
+            )
+    else:
+        lines.append("- No notable positive deviations detected today.")
 
-    raw_prompt = f"""
-You are the autonomous Chief of Staff delivering the 8:00 AM Executive Pulse.
-
-CRITICAL OPERATIONAL RISKS:
-{json.dumps(risks, indent=2)}
-
-POSITIVE GROWTH OPPORTUNITIES & SURGES:
-{json.dumps(opportunities, indent=2)}
-
-RECENT SYSTEM LOGS & DEPLOYMENTS:
-{json.dumps(events, indent=2)}
-
-Analyze the operational failures against the system deployments, but also highlight any notable growth windfalls. Connect the causal dots across engineering, finance, and product.
-
-Provide your response in clean Markdown with these exact sections:
-### 1. Executive Summary
-A 2-sentence synthesis explaining the primary operational crisis and any counterbalancing growth wins.
-
-### 2. Root Cause & Smoking Gun
-Quote the specific deployment, error message, and timestamp responsible for the failures.
-
-### 3. Business Impact & Exposure
-Detail estimated revenue loss, refund surge, and support ticket pressure alongside customer acquisition wins.
-
-### 4. Autonomous Action Plan
-Provide 3 immediate checklist items for engineering rollback and customer operations triage.
-"""
-
-    escaped_prompt = raw_prompt.replace("'", "''")
-
-    url = f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    statement_sql = f"""
-        SELECT AI_COMPLETE(
-            '{model}',
-            '{escaped_prompt}',
-            PARSE_JSON('{{"max_tokens": {max_tokens}, "temperature": {temperature}}}')
-        ) AS response;
-    """
-
-    payload = {
-        "statement": statement_sql,
-        "warehouse": "COMPUTE_WH",
-    }
-
-    response = requests.post(url, headers=headers, json=payload, timeout=45)
-    response.raise_for_status()
-
-    raw_text = response.json()["data"][0][0]
-
-    try:
-        clean_text = json.loads(raw_text)
-    except Exception:
-        clean_text = raw_text.strip('"').replace(r"\n", "\n")
-
-    return clean_text
+    return "\n".join(lines)
 
 
-# --- 2. INTERACTIVE CHAT AGENT ---
-def query_cortex_chat(
-    conversation_history: list[dict],
-    anomalies: dict[str, list[dict]] | list[dict],
-    system_brief: str,
-    model: str = "llama3.1-8b",
-    max_tokens: int = 512,
+def generate_executive_brief(
+    anomalies: Dict[str, List[Dict[str, Any]]],
+    model: str = "llama3.1-70b",
+    max_tokens: int = 768,
     temperature: float = 0.2,
 ) -> str:
-    """Sends chat history and dual-threat telemetry context to Snowflake AI_COMPLETE."""
-    history_transcript = ""
-    for turn in conversation_history[-6:]:
-        role = "Executive" if turn["role"] == "user" else "Chief of Staff"
-        history_transcript += f"{role}: {turn['content']}\n"
+    """Generates the executive morning briefing via Snowflake AI_COMPLETE."""
+    context = format_anomalies_for_prompt(anomalies)
 
-    system_prompt = f"""
-You are the AI Chief of Staff in MorningPulse. You previously generated this morning brief:
-\"\"\"{system_brief}\"\"\"
+    prompt = f"""You are the Chief of Staff to the CEO of a high-growth enterprise.
+Analyze the following statistical anomalies detected in today's telemetry:
 
-Telemetry Outliers:
-{json.dumps(anomalies)}
+{context}
 
-Respond concisely and directly to executive inquiries regarding root causes, financial damage, customer acquisition, or staged rollbacks. Do not hallucinate numbers outside the known data.
+Provide a crisp, actionable executive morning briefing organized into 3 sections:
+1. Executive Triage (2-3 sentences on the most critical operational risk and potential root causes)
+2. Departmental Escalations (Bullet points indicating which team leads must act today and why)
+3. Strategic Upside (1-2 sentences highlighting positive signals to lean into)
 
-CONVERSATION TRANSCRIPT:
-{history_transcript}
-Chief of Staff:"""
+Tone: Authoritative, calm, operationally specific. Do not use generic filler phrases.
+"""
+    sanitized_prompt = prompt.replace("'", "''")
+    sql = f"SELECT AI_COMPLETE('{model}', '{sanitized_prompt}') AS BRIEF;"
 
-    escaped_prompt = system_prompt.replace("'", "''")
+    rows = execute_snowflake_query(sql)
+    if rows and len(rows[0]) > 0 and rows[0][0]:
+        return clean_llm_response(rows[0][0])
 
-    url = f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    statement_sql = f"""
-        SELECT AI_COMPLETE(
-            '{model}',
-            '{escaped_prompt}',
-            PARSE_JSON('{{"max_tokens": {max_tokens}, "temperature": {temperature}}}')
-        ) AS response;
-    """
-
-    payload = {
-        "statement": statement_sql,
-        "warehouse": "COMPUTE_WH",
-    }
-
-    res = requests.post(url, headers=headers, json=payload, timeout=30)
-    res.raise_for_status()
-
-    raw_text = res.json()["data"][0][0]
-    try:
-        return json.loads(raw_text).strip('"')
-    except Exception:
-        return raw_text.strip('"').replace(r"\n", "\n")
+    return "Unable to generate executive brief from telemetry."
 
 
-if __name__ == "__main__":
-    print("Testing Snowflake Cortex synthesis with directional anomalies...\n")
-    print(generate_executive_brief())
+def query_cortex_chat(
+    conversation_history: List[Dict[str, str]],
+    anomalies: List[Dict[str, Any]],
+    system_brief: str = "",
+    model: str = "llama3.1-70b",
+    max_tokens: int = 768,
+    temperature: float = 0.2,
+) -> str:
+    """Interactive conversational agent for sidebar chat in app.py."""
+    last_query = conversation_history[-1]["content"] if conversation_history else ""
+
+    history_str = ""
+    for msg in conversation_history[-6:-1]:
+        history_str += f"{msg['role'].upper()}: {msg['content']}\n"
+
+    full_prompt = f"""You are the AI Chief of Staff answering an executive's questions about today's telemetry.
+Current Executive Briefing:
+{system_brief}
+
+Detected Anomalies:
+{anomalies}
+
+Recent Conversation:
+{history_str}
+
+Executive Question: {last_query}
+
+Provide a direct, concise, and mathematically grounded response.
+"""
+    sanitized_prompt = full_prompt.replace("'", "''")
+    sql = f"SELECT AI_COMPLETE('{model}', '{sanitized_prompt}') AS ANSWER;"
+
+    rows = execute_snowflake_query(sql)
+    if rows and len(rows[0]) > 0 and rows[0][0]:
+        return clean_llm_response(rows[0][0])
+
+    return "No response generated."
 
 
-# In core/brief_generator.py
+# =====================================================================
+# Snowflake Briefing Persistence (Dynamic Cache)
+# =====================================================================
 
-
-def get_latest_cached_brief() -> dict | None:
-    """Retrieves the most recent synthesized brief from Snowflake storage."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    sql = """
-        SELECT 
-            TO_VARCHAR(brief_date, 'YYYY-MM-DD') AS brief_date,
-            brief_text,
-            TO_VARCHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at,
-            sent_via_email
-        FROM MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS
-        ORDER BY brief_date DESC, updated_at DESC
+def get_latest_cached_brief() -> Optional[Dict[str, Any]]:
+    """Retrieves the latest cached executive brief from DAILY_BRIEFS."""
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."DAILY_BRIEFS"'
+    sql = f"""
+        SELECT brief_text, TO_VARCHAR(created_at, 'YYYY-MM-DD HH24:MI:SS'), sent_via_email
+        FROM {table}
+        ORDER BY created_at DESC
         LIMIT 1;
     """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
-        res.raise_for_status()
-        rows = res.json().get("data", [])
-        if not rows:
+        rows = execute_snowflake_query(sql)
+        if rows and len(rows[0]) > 0 and rows[0][0]:
+            return {
+                "text": clean_llm_response(rows[0][0]),
+                "updated_at": str(rows[0][1]) if len(rows[0]) > 1 else "Database",
+                "sent_via_email": bool(rows[0][2]) if len(rows[0]) > 2 else False,
+            }
+    except Exception:
+        # Fallback if sent_via_email column is not present
+        try:
+            sql_fallback = f"SELECT brief_text, TO_VARCHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') FROM {table} ORDER BY created_at DESC LIMIT 1;"
+            rows = execute_snowflake_query(sql_fallback)
+            if rows and len(rows[0]) > 0 and rows[0][0]:
+                return {
+                    "text": clean_llm_response(rows[0][0]),
+                    "updated_at": str(rows[0][1]) if len(rows[0]) > 1 else "Database",
+                    "sent_via_email": False,
+                }
+        except Exception:
             return None
-
-        row = rows[0]
-        return {
-            "date": row[0],
-            "text": row[1],
-            "updated_at": row[2],
-            "sent_via_email": str(row[3]).lower() == "true",
-        }
-    except Exception as e:
-        print(f"Warning: Failed to read cached brief from Snowflake: {e}")
-        return None
+    return None
 
 
-def save_brief_to_snowflake(
-    brief_text: str, sent_via_email: bool = False
-) -> None:
-    """Upserts the briefing into Snowflake for today's date."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
+def save_brief_to_snowflake(brief_text: str, sent_via_email: bool = False) -> bool:
+    """Saves a newly synthesized briefing to DAILY_BRIEFS."""
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."DAILY_BRIEFS"'
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    sanitized_text = brief_text.replace("'", "''")
 
-    escaped_text = brief_text.replace("'", "''")
-    email_flag = "TRUE" if sent_via_email else "FALSE"
-
-    # Merge/upsert on today's date
     sql = f"""
-        MERGE INTO MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS AS target
-        USING (
-            SELECT 
-                CURRENT_DATE() AS brief_date, 
-                '{escaped_text}' AS brief_text,
-                {email_flag} AS sent_via_email
-        ) AS src
-        ON target.brief_date = src.brief_date
-        WHEN MATCHED THEN
-            UPDATE SET 
-                target.brief_text = src.brief_text, 
-                target.updated_at = CURRENT_TIMESTAMP(),
-                target.sent_via_email = src.sent_via_email
-        WHEN NOT MATCHED THEN
-            INSERT (brief_date, brief_text, sent_via_email) 
-            VALUES (src.brief_date, src.brief_text, src.sent_via_email);
+        INSERT INTO {table} (brief_date, brief_text, created_at, sent_via_email)
+        SELECT '{today_str}', '{sanitized_text}', CURRENT_TIMESTAMP(), {str(sent_via_email).upper()};
     """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-
-    res = requests.post(url, headers=headers, json=payload, timeout=30)
-    res.raise_for_status()
-
-    prune_old_cached_briefs(retention_days=10)
-
-
-
-def prune_old_cached_briefs(retention_days: int = 30) -> None:
-    """Deletes briefs older than the specified retention window to keep storage lean."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    sql = f"""
-        DELETE FROM MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS
-        WHERE brief_date < DATEADD('day', -{retention_days}, CURRENT_DATE());
-    """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"Warning: Failed to prune old briefs from Snowflake: {e}")
+        execute_snowflake_query(sql)
+        return True
+    except Exception:
+        # Fallback if table doesn't have sent_via_email column
+        try:
+            sql_fallback = f"""
+                INSERT INTO {table} (brief_date, brief_text, created_at)
+                SELECT '{today_str}', '{sanitized_text}', CURRENT_TIMESTAMP();
+            """
+            execute_snowflake_query(sql_fallback)
+            return True
+        except Exception:
+            return False
 
 
-# In core/brief_generator.py
+# =====================================================================
+# Mailing List Management
+# =====================================================================
 
+def upsert_subscriber(email: str, full_name: str, role: str, is_active: bool = True) -> bool:
+    """Inserts or updates a recipient in MAILING_LIST dynamically."""
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."MAILING_LIST"'
 
-def get_active_mailing_list() -> list[str]:
-    """Fetches all active subscriber emails from the MAILING_LIST table."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    sql = """
-        SELECT email
-        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST
-        WHERE is_active = TRUE;
-    """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        res.raise_for_status()
-        rows = res.json().get("data", [])
-        return [row[0] for row in rows if row and row[0]]
-    except Exception as e:
-        print(f"Warning: Failed to retrieve mailing list from Snowflake: {e}")
-        return []
-
-
-def upsert_subscriber(
-    email: str,
-    full_name: str = "",
-    role: str = "",
-    is_active: bool = True,
-) -> None:
-    """Adds a new subscriber or updates existing subscription state."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
     clean_email = email.strip().lower().replace("'", "''")
     clean_name = full_name.strip().replace("'", "''")
     clean_role = role.strip().replace("'", "''")
-    active_flag = "TRUE" if is_active else "FALSE"
 
     sql = f"""
-        MERGE INTO MORNINGPULSE_DB.TELEMETRY.MAILING_LIST AS target
-        USING (
-            SELECT 
-                '{clean_email}' AS email,
-                '{clean_name}' AS full_name,
-                '{clean_role}' AS role,
-                {active_flag} AS is_active
-        ) AS src
-        ON target.email = src.email
+        MERGE INTO {table} AS target
+        USING (SELECT '{clean_email}' AS email) AS src
+        ON LOWER(target.email) = src.email
         WHEN MATCHED THEN
-            UPDATE SET 
-                target.full_name = src.full_name,
-                target.role = src.role,
-                target.is_active = src.is_active,
-                target.unsubscribed_at = CASE WHEN src.is_active = FALSE THEN CURRENT_TIMESTAMP() ELSE NULL END
+            UPDATE SET full_name = '{clean_name}', role = '{clean_role}', is_active = {str(is_active).upper()}
         WHEN NOT MATCHED THEN
-            INSERT (email, full_name, role, is_active)
-            VALUES (src.email, src.full_name, src.role, src.is_active);
+            INSERT (email, full_name, role, is_active, subscribed_at)
+            VALUES ('{clean_email}', '{clean_name}', '{clean_role}', {str(is_active).upper()}, CURRENT_TIMESTAMP());
     """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-    res = requests.post(url, headers=headers, json=payload, timeout=20)
-    res.raise_for_status()
+    try:
+        execute_snowflake_query(sql)
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Failed to upsert subscriber: {e}")
+
+
+import pandas as pd
+
+
+def get_active_mailing_list() -> List[str]:
+    """
+    Returns a list of active recipient email addresses from MAILING_LIST.
+    Used by scripts/dispatch_morning_pulse.py for automated dispatches.
+    """
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."MAILING_LIST"'
+    sql = f"""
+        SELECT email 
+        FROM {table} 
+        WHERE is_active = TRUE;
+    """
+    try:
+        rows = execute_snowflake_query(sql)
+        return [str(r[0]).strip() for r in rows if r and r[0]]
+    except Exception as e:
+        print(f"Error fetching active mailing list: {e}")
+        return []
+
 
 def get_all_subscribers_df() -> pd.DataFrame:
-    """Fetches all subscriber rows from Snowflake for administrative display."""
-    url = (
-        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
-    )
-    headers = {
-        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    sql = """
-        SELECT full_name, email, role, is_active, subscribed_at 
-        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST 
+    """
+    Returns the full subscriber directory as a DataFrame for app.py display.
+    """
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."MAILING_LIST"'
+    sql = f"""
+        SELECT full_name, email, role, is_active
+        FROM {table}
         ORDER BY subscribed_at DESC;
     """
-    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
-
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        res.raise_for_status()
-        rows = res.json().get("data", [])
+        rows = execute_snowflake_query(sql)
         if not rows:
-            return pd.DataFrame(
-                columns=[
-                    "Name",
-                    "Email",
-                    "Role",
-                    "Active",
-                    "Subscribed Date",
-                ]
-            )
-
-        df = pd.DataFrame(
-            rows,
-            columns=[
-                "Name",
-                "Email",
-                "Role",
-                "Active",
-                "Subscribed Date",
-            ],
+            return pd.DataFrame(columns=["full_name", "email", "role", "is_active"])
+        return pd.DataFrame(
+            rows, 
+            columns=["full_name", "email", "role", "is_active"]
         )
-        return df
     except Exception as e:
-        print(f"Warning: Failed to fetch subscriber table from Snowflake: {e}")
-        return pd.DataFrame()
+        print(f"Error fetching subscriber dataframe: {e}")
+        return pd.DataFrame(columns=["full_name", "email", "role", "is_active"])
