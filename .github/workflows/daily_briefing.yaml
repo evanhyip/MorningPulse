@@ -2,7 +2,8 @@ name: ☀️ MorningPulse Daily Dispatch
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # 9:00 AM PDT (UTC-7) is 16:00 UTC. (Switch to '0 17 * * *' for PST / UTC-8)
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
 jobs:
@@ -30,6 +31,5 @@ jobs:
           SNOWFLAKE_TOKEN: ${{ secrets.SNOWFLAKE_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           BRIEFING_SENDER_EMAIL: ${{ secrets.BRIEFING_SENDER_EMAIL }}
-          BRIEFING_RECIPIENT_EMAILS: ${{ secrets.BRIEFING_RECIPIENT_EMAILS }}
         run: |
           python -m scripts.dispatch_morning_pulse
