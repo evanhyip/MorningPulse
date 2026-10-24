@@ -3,8 +3,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from brief_generator import generate_executive_brief, query_cortex_chat
-from detector import detect_today_anomalies, fetch_telemetry_from_snowflake
+from core.brief_generator import generate_executive_brief, query_cortex_chat
+from core.detector import detect_today_anomalies, fetch_telemetry_from_snowflake
 
 st.set_page_config(page_title="MorningPulse", page_icon="☀️", layout="wide")
 
