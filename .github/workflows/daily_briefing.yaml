@@ -2,8 +2,7 @@ name: ☀️ MorningPulse Daily Dispatch
 
 on:
   schedule:
-    - cron: '0 4 * * *'
-      timezone: 'America/Los_Angeles'
+    - cron: '15 11 * * *'
   workflow_dispatch:
 
 jobs:
