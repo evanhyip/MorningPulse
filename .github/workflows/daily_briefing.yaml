@@ -2,13 +2,14 @@ name: ☀️ MorningPulse Daily Dispatch
 
 on:
   schedule:
-    - cron: '15 3 * * *'
+    - cron: '0 4 * * *'
       timezone: 'America/Los_Angeles'
   workflow_dispatch:
 
 jobs:
   dispatch:
     runs-on: ubuntu-latest
+    environment: test
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
