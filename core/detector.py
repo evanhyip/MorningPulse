@@ -15,20 +15,33 @@ import requests
 load_dotenv()
 
 
+def get_env_or_secret(key: str, default: str = "") -> str:
+    """Checks os.environ first, then Streamlit secrets if running inside Streamlit."""
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return default
+
+
 def get_snowflake_config(
     database: Optional[str] = None,
     schema: Optional[str] = None,
     table: Optional[str] = None,
     warehouse: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Resolves Snowflake connection coordinates from args or environment variables."""
     return {
-        "account": os.getenv("SNOWFLAKE_ACCOUNT", ""),
-        "token": os.getenv("SNOWFLAKE_TOKEN", ""),
-        "warehouse": warehouse or os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
-        "database": database or os.getenv("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB"),
-        "schema": schema or os.getenv("SNOWFLAKE_SCHEMA", "TELEMETRY"),
-        "table": table or os.getenv("SNOWFLAKE_TABLE", "BUSINESS_METRICS"),
+        "account": get_env_or_secret("SNOWFLAKE_ACCOUNT"),
+        "token": get_env_or_secret("SNOWFLAKE_TOKEN"),
+        "warehouse": warehouse or get_env_or_secret("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        "database": database or get_env_or_secret("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB"),
+        "schema": schema or get_env_or_secret("SNOWFLAKE_SCHEMA", "TELEMETRY"),
+        "table": table or get_env_or_secret("SNOWFLAKE_TABLE", "BUSINESS_METRICS"),
     }
 
 

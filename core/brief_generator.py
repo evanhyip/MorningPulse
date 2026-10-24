@@ -15,14 +15,26 @@ import requests
 load_dotenv()
 
 
+def get_env_or_secret(key: str, default: str = "") -> str:
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return default
+
+
 def get_snowflake_config() -> Dict[str, str]:
-    """Resolves database, schema, and warehouse coordinates dynamically."""
     return {
-        "account": os.getenv("SNOWFLAKE_ACCOUNT", ""),
-        "token": os.getenv("SNOWFLAKE_TOKEN", ""),
-        "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH").strip(' "\''),
-        "database": os.getenv("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB").strip(' "\''),
-        "schema": os.getenv("SNOWFLAKE_SCHEMA", "TELEMETRY").strip(' "\''),
+        "account": get_env_or_secret("SNOWFLAKE_ACCOUNT"),
+        "token": get_env_or_secret("SNOWFLAKE_TOKEN"),
+        "warehouse": get_env_or_secret("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH").strip(' "\''),
+        "database": get_env_or_secret("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB").strip(' "\''),
+        "schema": get_env_or_secret("SNOWFLAKE_SCHEMA", "TELEMETRY").strip(' "\''),
     }
 
 
@@ -309,3 +321,16 @@ def get_all_subscribers_df() -> pd.DataFrame:
     except Exception as e:
         print(f"Error fetching subscriber dataframe: {e}")
         return pd.DataFrame(columns=["full_name", "email", "role", "is_active"])
+
+def delete_subscriber(email: str) -> bool:
+    """Removes a subscriber from the dynamic MAILING_LIST table."""
+    cfg = get_snowflake_config()
+    table = f'"{cfg["database"]}"."{cfg["schema"]}"."MAILING_LIST"'
+    clean_email = email.strip().lower().replace("'", "''")
+
+    sql = f"DELETE FROM {table} WHERE LOWER(email) = '{clean_email}';"
+    try:
+        execute_snowflake_query(sql)
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Failed to delete subscriber: {e}")
