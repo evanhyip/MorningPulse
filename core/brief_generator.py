@@ -2,6 +2,7 @@ import json
 import os
 import requests
 from dotenv import load_dotenv
+import pandas as pd
 
 from core.detector import detect_today_anomalies
 from core.logs import get_recent_system_events
@@ -270,3 +271,125 @@ def prune_old_cached_briefs(retention_days: int = 30) -> None:
         res.raise_for_status()
     except Exception as e:
         print(f"Warning: Failed to prune old briefs from Snowflake: {e}")
+
+
+# In core/brief_generator.py
+
+
+def get_active_mailing_list() -> list[str]:
+    """Fetches all active subscriber emails from the MAILING_LIST table."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = """
+        SELECT email
+        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST
+        WHERE is_active = TRUE;
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        res.raise_for_status()
+        rows = res.json().get("data", [])
+        return [row[0] for row in rows if row and row[0]]
+    except Exception as e:
+        print(f"Warning: Failed to retrieve mailing list from Snowflake: {e}")
+        return []
+
+
+def upsert_subscriber(
+    email: str,
+    full_name: str = "",
+    role: str = "",
+    is_active: bool = True,
+) -> None:
+    """Adds a new subscriber or updates existing subscription state."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    clean_email = email.strip().lower().replace("'", "''")
+    clean_name = full_name.strip().replace("'", "''")
+    clean_role = role.strip().replace("'", "''")
+    active_flag = "TRUE" if is_active else "FALSE"
+
+    sql = f"""
+        MERGE INTO MORNINGPULSE_DB.TELEMETRY.MAILING_LIST AS target
+        USING (
+            SELECT 
+                '{clean_email}' AS email,
+                '{clean_name}' AS full_name,
+                '{clean_role}' AS role,
+                {active_flag} AS is_active
+        ) AS src
+        ON target.email = src.email
+        WHEN MATCHED THEN
+            UPDATE SET 
+                target.full_name = src.full_name,
+                target.role = src.role,
+                target.is_active = src.is_active,
+                target.unsubscribed_at = CASE WHEN src.is_active = FALSE THEN CURRENT_TIMESTAMP() ELSE NULL END
+        WHEN NOT MATCHED THEN
+            INSERT (email, full_name, role, is_active)
+            VALUES (src.email, src.full_name, src.role, src.is_active);
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+    res = requests.post(url, headers=headers, json=payload, timeout=20)
+    res.raise_for_status()
+
+def get_all_subscribers_df() -> pd.DataFrame:
+    """Fetches all subscriber rows from Snowflake for administrative display."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = """
+        SELECT full_name, email, role, is_active, subscribed_at 
+        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST 
+        ORDER BY subscribed_at DESC;
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        res.raise_for_status()
+        rows = res.json().get("data", [])
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "Name",
+                    "Email",
+                    "Role",
+                    "Active",
+                    "Subscribed Date",
+                ]
+            )
+
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "Name",
+                "Email",
+                "Role",
+                "Active",
+                "Subscribed Date",
+            ],
+        )
+        return df
+    except Exception as e:
+        print(f"Warning: Failed to fetch subscriber table from Snowflake: {e}")
+        return pd.DataFrame()
