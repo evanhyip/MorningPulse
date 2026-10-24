@@ -1,57 +1,129 @@
 # ☀️ MorningPulse
 
-**Autonomous Executive Telemetry & Incident Intelligence Engine**  
-*Built for Cal Hacks 13.0*
+**Autonomous Executive Telemetry & Incident Intelligence Engine**
+
+Powered by Snowflake SQL REST API v2 & Snowflake AI Functions (`AI_COMPLETE`).
 
 ---
 
-## 📌 Executive Overview
+## 📌 Overview
 
-**MorningPulse** transforms raw telemetry data stored in Snowflake into an actionable morning intelligence briefing for leadership. Instead of forcing executives to parse disparate metric dashboards and infrastructure logs, MorningPulse:
+MorningPulse monitors enterprise operational health by continuously querying business metrics in Snowflake, automatically isolating statistical anomalies (using dynamic lookback baselines and Z-score thresholding), and synthesizing crisp, actionable executive morning briefs powered by LLMs hosted directly inside Snowflake Cortex.
 
-1. **Monitors Telemetry in Snowflake**: Queries historical business metrics directly from a Snowflake warehouse table via the Snowflake SQL Statements REST API.
-2. **Detects Statistical Anomalies**: Computes rolling 14-day baseline statistical variances ($\vert{}Z\vert{} \ge 2.5$) using shifted trailing windows in Pandas.
-3. **Pinpoints Root Causes via Snowflake Cortex**: Correlates metric spikes against deployment events and error logs using foundational LLMs (`llama3.1-8b`, `llama3.1-70b`, `mistral-large2`) hosted on Snowflake Cortex `AI_COMPLETE`.
-4. **Enables Conversational Drill-Downs**: Features an interactive "AI Chief of Staff" agent to answer ad-hoc executive inquiries regarding financial exposure, blast radius, and system health.
-5. **Stages Human-in-the-Loop Remediation**: Provides immediate one-click mitigation dispatch (e.g., automated service rollbacks, incident status page broadcasts).
+### Key Capabilities
+
+* **Table & Schema Agnostic Ingestion**: Fully dynamic database and table coordinates. Handles case sensitivity, quoted identifiers, and schemas with spaces or custom names (e.g., `BUSINESS_METRICS`).
+* **Resilient Snowflake REST Serialization**: Automatically decodes Snowflake SQL API v2 integer epoch day representations (e.g., `'20690'`) and string-encoded numbers.
+* **Native Cortex AI Functions**: Migrated to native `AI_COMPLETE` using high-performance foundation models (`llama3.1-70b`, `llama3.1-8b`, `snowflake-arctic`).
+* **Zero-Friction Executive Cockpit**: Streamlit application featuring live metric time-series exploration, automated risk/opportunity categorizations, persistent briefing caches, automated email dispatches, and an interactive AI Chief of Staff copilot.
 
 ---
 
 ## 🏗️ Architecture
 
-```
+```text
                        ┌────────────────────────────────────────┐
-                       │          Snowflake Warehouse           │
-                       │   MORNINGPULSE_DB.TELEMETRY.METRICS    │
-                       └───────────────────┬────────────────────┘
+                       │            Snowflake Data Warehouse    │
+                       │  - BUSINESS_METRICS (Telemetry)        │
+                       │  - DAILY_BRIEFS (Cache & History)      │
+                       │  - MAILING_LIST (Distribution)         │
+                       └───────────────────▲────────────────────┘
                                            │
-                                           │ Snowflake SQL Statements REST API
-                                           ▼
-                       ┌────────────────────────────────────────┐
-                       │          Statistical Detector          │
-                       │       (14-Day Rolling Z-Scores)        │
-                       └───────────────────┬────────────────────┘
+                           REST API v2 / SQL Statements
                                            │
-                                           │ Flagged Outliers + System Logs
-                                           ▼
-┌──────────────────────┐       ┌────────────────────────────────────────┐
-│  Executive Dashboard │ ◄──── │       Snowflake Cortex Engine          │
-│   (Streamlit App)    │       │     AI_COMPLETE (Llama 3.1 / Mistral)  │
-└──────────┬───────────┘       └───────────────────┬────────────────────┘
-           │                                       │
-           │ Interactive Inquiries                 │ Contextual Answers
-           └───────────────────► Chat Agent ◄──────┘
+                       ┌───────────────────▼────────────────────┐
+                       │            MorningPulse Core           │
+                       ├────────────────────────────────────────┤
+                       │ core/detector.py:                      │
+                       │   - Dynamic identifier quoting         │
+                       │   - Epoch date & metric normalizer     │
+                       │   - Statistical baseline & Z-scores    │
+                       │                                        │
+                       │ core/brief_generator.py:               │
+                       │   - Snowflake AI_COMPLETE synthesis    │
+                       │   - Executive prompt conditioning      │
+                       │   - Brief persistence & mailing lists  │
+                       └───────────────────▲────────────────────┘
+                                           │
+                       ┌───────────────────▼────────────────────┐
+                       │          Presentation Tier             │
+                       ├────────────────────────────────────────┤
+                       │ app.py (Streamlit Dashboard):          │
+                       │   - Tab 1: Executive Morning Pulse     │
+                       │   - Tab 2: Enterprise Telemetry Cockpit│
+                       │   - Tab 3: Mailing List Directory      │
+                       │   - Sidebar: AI Chief of Staff Chat    │
+                       │                                        │
+                       │ scripts/dispatch_morning_pulse.py      │
+                       │   - Automated scheduled dispatch engine│
+                       └────────────────────────────────────────┘
 ```
 
 ---
 
-## ✨ Key Features
+## ⚙️ Environment Configuration
 
-- **Warehouse-Native Architecture**: Operates directly against live Snowflake tables (`MORNINGPULSE_DB.TELEMETRY.BUSINESS_METRICS`) with cached REST queries to conserve compute credits.
-- **Executive-First Vocabulary**: Replaces technical jargon (e.g., Z-scores, snake_case column names) with plain-language business titles (e.g., "Payment Checkout Failure Rate") and intuitive severity badges (🔴 *Critical Outlier*, 🟠 *Moderate Warning*).
-- **Customizable AI Specs**: Dynamic sidebar controls in Streamlit allowing runtime selection of Cortex models (`llama3.1-8b`, `llama3.1-70b`, `llama3.1-405b`, `mistral-large2`, `snowflake-arctic`), max output tokens, and temperature sampling.
-- **Gated Conversational Agent**: Stateful, multi-turn AI interrogation interface that unlocks once the morning brief is synthesized, grounding follow-up answers exclusively in verified warehouse metrics and logs.
-- **Human-in-the-Loop Actions**: Staged incident resolution buttons ensuring production commands (like cluster rollbacks) require human authorization before execution.
+Create a `.env` file in the project root:
+
+```ini
+# Snowflake Connection Coordinates
+SNOWFLAKE_ACCOUNT="your-account-identifier"
+SNOWFLAKE_TOKEN="your-rest-api-bearer-or-oauth-token"
+SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
+
+# Target Database & Schema
+SNOWFLAKE_DATABASE="MORNINGPULSE_DB"
+SNOWFLAKE_SCHEMA="TELEMETRY"
+SNOWFLAKE_TABLE="BUSINESS_METRICS"
+
+# Email Dispatch Configuration (Optional)
+RESEND_API_KEY="your-resend-api-key"
+BRIEFING_SENDER_EMAIL="your-resend-created-email"
+BRIEFING_RECIPIENT_EMAILS="valid-recipient-emails"
+```
+
+---
+
+## 🚀 Getting Started
+
+### 1. Prerequisites & Installation
+
+Ensure you have Python 3.10+ installed.
+
+```bash
+# Clone the repository
+git clone [https://github.com/evanhyip/MorningPulse.git](https://github.com/evanhyip/MorningPulse.git)
+cd MorningPulse
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Verify Snowflake Connection & Anomaly Engine
+
+Run the detector test suite directly from your terminal:
+
+```bash
+python -c "from core.detector import fetch_telemetry_from_snowflake, detect_today_anomalies; df = fetch_telemetry_from_snowflake(); print('Data shape:', df.shape); print('Anomalies found:', detect_today_anomalies(df))"
+```
+
+### 3. Verify Executive Brief Generation via Cortex
+
+Test briefing synthesis with `llama3.1-70b`:
+
+```bash
+python -c "from core.detector import fetch_telemetry_from_snowflake, detect_today_anomalies; from core.brief_generator import generate_executive_brief; df = fetch_telemetry_from_snowflake(); anomalies = detect_today_anomalies(df); print(generate_executive_brief(anomalies))"
+```
+
+### 4. Launch the Dashboard
+
+```bash
+streamlit run app.py
+```
 
 ---
 
@@ -59,111 +131,35 @@
 
 ```text
 MorningPulse/
-├── app.py                      # Streamlit frontend & executive interface
 ├── core/
-│   ├── __init__.py
-│   ├── brief_generator.py      # Snowflake Cortex synthesis & chat agent
-│   ├── detector.py             # Snowflake REST query & rolling Z-score math
-│   └── logs.py                 # Telemetry error and deployment log provider
-├── data/
-│   └── seed_metrics.csv        # Baseline telemetry dataset (300 records)
+│   ├── detector.py          # Dynamic telemetry extraction, schema mapping & anomaly detection
+│   └── brief_generator.py   # AI_COMPLETE briefing synthesis, caching, and mailing lists
 ├── scripts/
-│   └── generate_data.py        # Synthetic 60-day telemetry generation script
-├── requirements.txt            # Python dependencies
-├── .env.example                # Template for credentials
-└── README.md
+│   └── dispatch_morning_pulse.py # Script for scheduled morning email runs
+├── app.py                   # Executive Streamlit Cockpit
+├── requirements.txt         # Dependencies
+├── .env.example             # Template environment variables
+└── README.md                # Project documentation
 ```
 
 ---
 
-## 🚀 Getting Started
+## 📊 Data Contracts
 
-### 1. Prerequisites
+MorningPulse dynamically adapts to arbitrary table schemas, mapping the following canonical aliases into its internal pipeline:
 
-- Python 3.10+
-- A Snowflake account with Cortex AI functions enabled and a Personal Access Token (PAT).
-
-### 2. Environment Setup
-
-Clone the repository and install required packages:
-
-```bash
-git clone [https://github.com/YOUR_USERNAME/MorningPulse.git](https://github.com/YOUR_USERNAME/MorningPulse.git)
-cd MorningPulse
-
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Create a `.env` file in the project root:
-
-```env
-SNOWFLAKE_ACCOUNT="your-org-your-account"
-SNOWFLAKE_TOKEN="your_snowflake_personal_access_token"
-```
+| Internal Column | Accepted Column Aliases | Type | Description |
+| :--- | :--- | :--- | :--- |
+| `metric_date` | `date`, `timestamp`, `created_at`, `day`, `dt` | `DATE` / `TIMESTAMP` / Epoch Day | Metric observation date |
+| `metric_name` | `kpi`, `metric`, `name`, `measure`, `indicator` | `VARCHAR` | Unique identifier for metric |
+| `metric_value` | `value`, `val`, `amount`, `score`, `cnt` | `FLOAT` / `NUMERIC` | Metric reading |
+| `department` | `dept`, `team`, `category`, `service` | `VARCHAR` | Operational department owner |
+| `unit` | `units`, `uom` | `VARCHAR` | Display unit (`%`, `$`, `ms`, etc.) |
 
 ---
 
-## 🗄️ Snowflake Database Initialization
+## 🔒 Security & Best Practices
 
-Run the following SQL block in a Snowflake Worksheet to configure the database, schema, and telemetry table:
-
-```sql
-USE ROLE ACCOUNTADMIN;
-USE WAREHOUSE COMPUTE_WH;
-
-CREATE DATABASE IF NOT EXISTS MORNINGPULSE_DB;
-USE DATABASE MORNINGPULSE_DB;
-
-CREATE SCHEMA IF NOT EXISTS TELEMETRY;
-USE SCHEMA TELEMETRY;
-
-CREATE OR REPLACE TABLE BUSINESS_METRICS (
-    metric_date DATE,
-    department VARCHAR(50),
-    metric_name VARCHAR(100),
-    metric_value FLOAT,
-    unit VARCHAR(20)
-);
-```
-
-### Loading Data
-Load `data/seed_metrics.csv` into `BUSINESS_METRICS` via **Snowsight** (**Data** $\rightarrow$ **Databases** $\rightarrow$ **MORNINGPULSE_DB** $\rightarrow$ **TELEMETRY** $\rightarrow$ **BUSINESS_METRICS** $\rightarrow$ **Load Data**), selecting CSV format and setting **Skip first line** to 1.
-
-Verify the table population:
-```sql
-SELECT COUNT(*) FROM MORNINGPULSE_DB.TELEMETRY.BUSINESS_METRICS;
--- Expected output: 300 rows
-```
-
----
-
-## 🖥️ Running the Application
-
-Launch the Streamlit executive application:
-
-```bash
-streamlit run app.py
-```
-
-The application will be live at `http://localhost:8501`.
-
-### Verification Walkthrough
-1. **Inspect Incidents**: Review top-level anomaly cards showing live deviations against trailing 14-day baselines.
-2. **Review Trajectory**: Inspect interactive Plotly line charts displaying historical trends for checkout failures and refund spikes.
-3. **Generate Brief**: Click **Generate Morning Brief** to trigger Snowflake Cortex `AI_COMPLETE`, which correlates anomalies with deployment logs to produce root-cause analysis.
-4. **Interrogate the Agent**: Scroll to the unlocked **Ask the AI Chief of Staff** panel and query specifics (e.g., *"What caused the SEPA gateway errors?"* or *"What is our financial exposure?"*).
-5. **Stage Mitigation**: Use the staged remediation buttons to simulate operational rollbacks.
-
----
-
-## 🛠️ Technology Stack
-
-| Layer | Component | Description |
-| :--- | :--- | :--- |
-| **Data Warehouse** | Snowflake | Relational store for telemetry (`MORNINGPULSE_DB`) |
-| **Data API** | Snowflake SQL Statements API v2 | REST interface for warehouse queries |
-| **AI / Synthesis** | Snowflake Cortex (`AI_COMPLETE`) | Managed LLM inference (`llama3.1-8b`, `llama3.1-70b`) |
-| **Analytics** | Python, Pandas, NumPy | 14-day rolling window baseline and Z-score calculations |
-| **User Interface** | Streamlit, Plotly | Interactive executive monitoring and conversational UI |
+* **Bearer Token Handling**: All queries use short-lived bearer tokens or secure personal tokens transmitted over HTTPS to Snowflake's REST API.
+* **SQL Sanitization**: All user and system prompts are sanitized against single-quote SQL escapes prior to executing `AI_COMPLETE`.
+* **Masked Data**: Sensitive stakeholder emails are masked within the Streamlit UI to safeguard privacy in live executive settings.
