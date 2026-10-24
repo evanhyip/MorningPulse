@@ -27,6 +27,7 @@ jsonschema-specifications==2025.9.1
 jupyter_client==8.10.0
 jupyter_core==5.9.1
 jupyterlab_pygments==0.3.0
+Markdown==3.11.2
 MarkupSafe==3.0.4
 matplotlib-inline==0.2.2
 mistune==3.4.0
@@ -60,6 +61,7 @@ pytz==2026.5
 pyzmq==27.2.0
 referencing==0.37.0
 requests==2.34.2
+resend==2.50.0
 rpds-py==2026.9.1
 six==1.17.0
 snowflake-connector-python==5.1.0
