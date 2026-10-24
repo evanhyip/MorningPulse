@@ -159,3 +159,88 @@ Chief of Staff:"""
 if __name__ == "__main__":
     print("Testing Snowflake Cortex synthesis with directional anomalies...\n")
     print(generate_executive_brief())
+
+
+# In core/brief_generator.py
+
+
+def get_latest_cached_brief() -> dict | None:
+    """Retrieves the most recent synthesized brief from Snowflake storage."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = """
+        SELECT 
+            TO_VARCHAR(brief_date, 'YYYY-MM-DD') AS brief_date,
+            brief_text,
+            TO_VARCHAR(updated_at, 'YYYY-MM-DD HH24:MI:SS') AS updated_at,
+            sent_via_email
+        FROM MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS
+        ORDER BY brief_date DESC, updated_at DESC
+        LIMIT 1;
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=30)
+        res.raise_for_status()
+        rows = res.json().get("data", [])
+        if not rows:
+            return None
+
+        row = rows[0]
+        return {
+            "date": row[0],
+            "text": row[1],
+            "updated_at": row[2],
+            "sent_via_email": str(row[3]).lower() == "true",
+        }
+    except Exception as e:
+        print(f"Warning: Failed to read cached brief from Snowflake: {e}")
+        return None
+
+
+def save_brief_to_snowflake(
+    brief_text: str, sent_via_email: bool = False
+) -> None:
+    """Upserts the briefing into Snowflake for today's date."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    escaped_text = brief_text.replace("'", "''")
+    email_flag = "TRUE" if sent_via_email else "FALSE"
+
+    # Merge/upsert on today's date
+    sql = f"""
+        MERGE INTO MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS AS target
+        USING (
+            SELECT 
+                CURRENT_DATE() AS brief_date, 
+                '{escaped_text}' AS brief_text,
+                {email_flag} AS sent_via_email
+        ) AS src
+        ON target.brief_date = src.brief_date
+        WHEN MATCHED THEN
+            UPDATE SET 
+                target.brief_text = src.brief_text, 
+                target.updated_at = CURRENT_TIMESTAMP(),
+                target.sent_via_email = src.sent_via_email
+        WHEN NOT MATCHED THEN
+            INSERT (brief_date, brief_text, sent_via_email) 
+            VALUES (src.brief_date, src.brief_text, src.sent_via_email);
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+
+    res = requests.post(url, headers=headers, json=payload, timeout=30)
+    res.raise_for_status()

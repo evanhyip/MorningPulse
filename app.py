@@ -3,12 +3,22 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from core.brief_generator import generate_executive_brief, query_cortex_chat
+from core.brief_generator import (
+    generate_executive_brief,
+    get_latest_cached_brief,
+    query_cortex_chat,
+    save_brief_to_snowflake,
+)
 from core.detector import detect_today_anomalies, fetch_telemetry_from_snowflake
 
-st.set_page_config(page_title="MorningPulse", page_icon="☀️", layout="wide")
+st.set_page_config(
+    page_title="MorningPulse",
+    page_icon="☀️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# --- EXECUTIVE METRIC METADATA ---
+# --- METRIC METADATA & TITLES ---
 METRIC_META = {
     "daily_net_revenue_usd": {"title": "Daily Net Revenue", "fmt": "${:,.0f}"},
     "checkout_failure_rate_pct": {"title": "Checkout Failure Rate", "fmt": "{:.2f}%"},
@@ -29,56 +39,116 @@ METRIC_META = {
 
 
 def get_delta_color(change_str: str, is_risk: bool) -> str:
-    """Ensures operational risks are always rendered red and opportunities green."""
+    """Ensures risks are displayed in red and growth windfalls in green."""
     is_positive = not change_str.startswith("-")
     if is_risk:
         return "inverse" if is_positive else "normal"
     return "normal" if is_positive else "inverse"
 
 
-# --- SIDEBAR CONFIGURATION ---
-with st.sidebar:
-    st.header("⚙️ Snowflake Cortex Settings")
-    selected_model = st.selectbox(
-        "AI Model",
-        ["llama3.1-8b", "llama3.1-70b", "mistral-large2", "snowflake-arctic"],
-        index=0,
-        help="Select foundational LLM hosted natively in Snowflake Cortex.",
-    )
-    max_tokens = st.slider("Max Output Tokens", 128, 2048, 768, 64)
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    st.divider()
-    st.caption("Warehouse: `COMPUTE_WH`")
-    st.caption("Database: `MORNINGPULSE_DB.TELEMETRY`")
-
-
+# --- 1. DATA INGESTION & ANOMALY DETECTION ---
 @st.cache_data(ttl=600)
 def load_data():
     return fetch_telemetry_from_snowflake()
 
 
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Failed to query Snowflake warehouse: {e}")
+    st.stop()
+
+anomalies_dict = detect_today_anomalies(df)
+risks = anomalies_dict.get("risks", [])
+opps = anomalies_dict.get("opportunities", [])
+all_anomalies = risks + opps
+
+
+# --- 2. BRIEF INITIALIZATION VIA SNOWFLAKE PERSISTENCE ---
+# Check Snowflake for today's / latest cached briefing first
+if "brief" not in st.session_state:
+    cached = get_latest_cached_brief()
+    if cached and cached.get("text"):
+        st.session_state["brief"] = cached["text"]
+        st.session_state["brief_source"] = f"Cached ({cached.get('updated_at', 'Database')})"
+        st.session_state["brief_email_status"] = cached.get("sent_via_email", False)
+    else:
+        # Fall back to live synthesis if Snowflake has no existing record
+        with st.spinner("Synthesizing fresh 8:00 AM telemetry brief..."):
+            try:
+                new_brief = generate_executive_brief(anomalies=anomalies_dict)
+                save_brief_to_snowflake(new_brief, sent_via_email=False)
+                st.session_state["brief"] = new_brief
+                st.session_state["brief_source"] = "Generated on Launch"
+                st.session_state["brief_email_status"] = False
+            except Exception as e:
+                st.session_state["brief"] = f"Failed to synthesize brief: {e}"
+                st.session_state["brief_source"] = "Error"
+
+
+# --- 3. SIDEBAR: CHIEF OF STAFF AGENT & CONFIG ---
+with st.sidebar:
+    st.title("💬 AI Chief of Staff")
+    st.caption("Live Snowflake Cortex incident & telemetry copilot.")
+
+    with st.expander("⚙️ Cortex Configuration", expanded=False):
+        selected_model = st.selectbox(
+            "AI Model",
+            ["llama3.1-8b", "llama3.1-70b", "mistral-large2", "snowflake-arctic"],
+            index=0,
+            help="Hosted foundational LLMs via Snowflake Cortex AI_COMPLETE",
+        )
+        max_tokens = st.slider("Max Output Tokens", 128, 2048, 768, 64)
+        temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
+        st.caption("Warehouse: `COMPUTE_WH`")
+        st.caption("Database: `MORNINGPULSE_DB.TELEMETRY`")
+
+    st.divider()
+
+    # Conversation History
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    chat_box = st.container(height=420)
+    for msg in st.session_state["chat_history"]:
+        with chat_box.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Persistent Sidebar Chat Input
+    if prompt := st.chat_input("Ask Chief of Staff..."):
+        st.session_state["chat_history"].append({"role": "user", "content": prompt})
+        with chat_box.chat_message("user"):
+            st.markdown(prompt)
+
+        with chat_box.chat_message("assistant"):
+            with st.spinner("Consulting Cortex..."):
+                try:
+                    agent_res = query_cortex_chat(
+                        conversation_history=st.session_state["chat_history"],
+                        anomalies=all_anomalies,
+                        system_brief=st.session_state.get("brief", ""),
+                        model=selected_model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    st.markdown(agent_res)
+                    st.session_state["chat_history"].append(
+                        {"role": "assistant", "content": agent_res}
+                    )
+                except Exception as e:
+                    st.error(f"Error querying Snowflake Cortex Agent: {e}")
+
+
+# --- 4. MAIN DASHBOARD CONTENT ---
 st.title("☀️ MorningPulse")
 st.caption("Enterprise Telemetry Intelligence · Powered by Snowflake Cortex")
 
-with st.spinner("Connecting to Snowflake warehouse..."):
-    try:
-        df = load_data()
-    except Exception as e:
-        st.error(f"Failed to query Snowflake: {e}")
-        st.stop()
-
-anomalies_dict = detect_today_anomalies(df)
-risks = anomalies_dict["risks"]
-opps = anomalies_dict["opportunities"]
-all_anomalies = risks + opps
-
-# --- NAVIGATION TABS ---
 tab_exec, tab_cockpit = st.tabs(
     ["☀️ Executive Morning Pulse", "📊 Company Cockpit (All 15 Metrics)"]
 )
 
 # ==========================================
-# TAB 1: EXECUTIVE PULSE
+# TAB 1: EXECUTIVE MORNING PULSE
 # ==========================================
 with tab_exec:
     # 1. Critical Operational Risks
@@ -129,32 +199,54 @@ with tab_exec:
 
     st.divider()
 
-    # 3. Cortex Executive Synthesis
-    st.subheader("📋 Executive Incident Briefing")
-    if st.button("Generate Morning Brief", type="primary"):
-        with st.spinner(f"Snowflake Cortex ({selected_model}) analyzing telemetry across all departments..."):
-            try:
-                st.session_state["brief"] = generate_executive_brief(
-                    anomalies=anomalies_dict,
-                    model=selected_model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            except Exception as e:
-                st.error(f"Error calling Cortex: {e}")
+    # 3. Cortex Incident Briefing Section
+    col_header, col_meta, col_refresh = st.columns([3, 2, 1])
+    with col_header:
+        st.subheader("📋 Executive Incident Briefing")
+    with col_meta:
+        source_label = st.session_state.get("brief_source", "Database")
+        st.caption(f"Status: `{source_label}`")
+    with col_refresh:
+        if st.button("🔄 Regenerate Brief", use_container_width=True):
+            with st.spinner(f"Re-synthesizing via {selected_model}..."):
+                try:
+                    fresh_brief = generate_executive_brief(
+                        anomalies=anomalies_dict,
+                        model=selected_model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    # Persist the freshly generated brief to Snowflake table
+                    save_brief_to_snowflake(fresh_brief, sent_via_email=False)
+                    st.session_state["brief"] = fresh_brief
+                    st.session_state["brief_source"] = "Manual Refresh"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error calling Cortex: {e}")
 
-    if "brief" in st.session_state and st.session_state["brief"]:
+    if st.session_state.get("brief"):
         with st.container(border=True):
             st.markdown(st.session_state["brief"])
 
         st.markdown("#### ⚡ Staged Remediation Actions")
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("🚨 Trigger Rollback (`checkout-service-v2.14`)"):
+            if st.button("🚨 Trigger Rollback (`checkout-service-v2.14`)", use_container_width=True):
                 st.success("Rollback command dispatched to Kubernetes cluster.")
         with c2:
-            if st.button("📢 Broadcast Status Incident Advisory"):
+            if st.button("📢 Broadcast Status Incident Advisory", use_container_width=True):
                 st.info("Incident advisory posted to customer status channels.")
+        with c3:
+            if st.button("📧 Dispatch Briefing Email to All-Hands", use_container_width=True):
+                with st.spinner("Dispatching styled briefing to distribution list..."):
+                    try:
+                        from scripts.dispatch_morning_pulse import send_daily_pulse_email
+                        send_daily_pulse_email(brief_text=st.session_state["brief"])
+                        st.success("Briefing email sent to distribution list!")
+                    except Exception as e:
+                        st.error(f"Failed to send email: {e}")
+
+
 
 # ==========================================
 # TAB 2: COMPANY COCKPIT (ALL 15 CHARTS)
@@ -198,43 +290,3 @@ with tab_cockpit:
         with col:
             with st.container(border=True):
                 st.plotly_chart(fig, use_container_width=True)
-
-# ==========================================
-# PERSISTENT CHIEF OF STAFF AGENT (BELOW TABS)
-# ==========================================
-st.divider()
-st.subheader("💬 Ask the AI Chief of Staff")
-st.caption("Drill down into causal telemetry, revenue loss, or mitigation steps across any tab.")
-
-if not st.session_state.get("brief"):
-    st.info("🔒 Click **Generate Morning Brief** on the Executive Pulse tab to unlock the AI agent.")
-else:
-    if "chat_history" not in st.session_state:
-        st.session_state["chat_history"] = []
-
-    for msg in st.session_state["chat_history"]:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if prompt := st.chat_input("Ask about revenue impact, root cause, or metric charts..."):
-        st.session_state["chat_history"].append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing telemetry with Snowflake Cortex..."):
-                try:
-                    agent_res = query_cortex_chat(
-                        conversation_history=st.session_state["chat_history"],
-                        anomalies=all_anomalies,
-                        system_brief=st.session_state["brief"],
-                        model=selected_model,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                    )
-                    st.markdown(agent_res)
-                    st.session_state["chat_history"].append(
-                        {"role": "assistant", "content": agent_res}
-                    )
-                except Exception as e:
-                    st.error(f"Error querying Snowflake Cortex Agent: {e}")
