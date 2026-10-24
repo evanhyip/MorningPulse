@@ -3,7 +3,7 @@ import plotly.express as px
 import streamlit as st
 
 from brief_generator import generate_executive_brief
-from detector import detect_today_anomalies
+from detector import detect_today_anomalies, fetch_telemetry_from_snowflake
 from logs import get_recent_system_events
 
 st.set_page_config(
@@ -18,8 +18,15 @@ st.caption(
     "Autonomous Enterprise Telemetry & Root-Cause Synthesis · Powered by Snowflake AI"
 )
 
+# In app.py
+@st.cache_data(ttl=600)
+def load_data():
+    return fetch_telemetry_from_snowflake()
+
+
 # 1. Top Section: Detected Metric Anomalies
-anomalies = detect_today_anomalies("seed_metrics.csv")
+df = load_data()
+anomalies = detect_today_anomalies(df)
 
 st.markdown("### 🚨 Overnight Anomalies Detected")
 cols = st.columns(len(anomalies))

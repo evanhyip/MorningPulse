@@ -12,7 +12,7 @@ SNOWFLAKE_TOKEN = os.getenv("SNOWFLAKE_TOKEN")
 
 
 def generate_executive_brief() -> str:
-    anomalies = detect_today_anomalies("seed_metrics.csv")
+    anomalies = detect_today_anomalies()
     events = get_recent_system_events()
 
     raw_prompt = f"""
