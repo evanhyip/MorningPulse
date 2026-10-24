@@ -1,6 +1,8 @@
 # app.py
+import os
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
 from core.brief_generator import (
@@ -10,6 +12,12 @@ from core.brief_generator import (
     save_brief_to_snowflake,
 )
 from core.detector import detect_today_anomalies, fetch_telemetry_from_snowflake
+
+# Optional helper import from brief_generator if available
+try:
+    from core.brief_generator import upsert_subscriber
+except ImportError:
+    upsert_subscriber = None
 
 st.set_page_config(
     page_title="MorningPulse",
@@ -44,6 +52,81 @@ def get_delta_color(change_str: str, is_risk: bool) -> str:
     if is_risk:
         return "inverse" if is_positive else "normal"
     return "normal" if is_positive else "inverse"
+
+
+def mask_email(email: str) -> str:
+    """Masks an email for privacy while keeping it identifiable."""
+    if not email or not isinstance(email, str) or "@" not in email:
+        return "—"
+
+    clean = email.strip()
+    try:
+        local, domain = clean.split("@", 1)
+        if len(local) <= 1:
+            masked_local = local + "***"
+        elif len(local) == 2:
+            masked_local = local[0] + "*" + local[-1]
+        else:
+            # Shows first 2 chars and last char: "alexander" -> "al*****r"
+            visible_prefix = local[:2] if len(local) >= 4 else local[:1]
+            masked_stars = "*" * max(3, len(local) - len(visible_prefix) - 1)
+            masked_local = f"{visible_prefix}{masked_stars}{local[-1]}"
+
+        return f"{masked_local}@{domain}"
+    except Exception:
+        return "—"
+
+
+def fetch_subscribers_data() -> list[dict]:
+    """Fetches subscriber list from Snowflake with support for both module helper and direct query."""
+    try:
+        from core.brief_generator import get_all_subscribers_df
+        res = get_all_subscribers_df()
+        if isinstance(res, pd.DataFrame):
+            return res.to_dict(orient="records")
+        if isinstance(res, list):
+            return res
+    except (ImportError, AttributeError):
+        pass
+
+    account = os.getenv("SNOWFLAKE_ACCOUNT")
+    token = os.getenv("SNOWFLAKE_TOKEN")
+    if not account or not token:
+        try:
+            from core.brief_generator import get_active_mailing_list
+            active_emails = get_active_mailing_list()
+            return [{"full_name": "Subscriber", "email": e, "role": "Team Member", "is_active": True} for e in active_emails]
+        except Exception:
+            return []
+
+    url = f"https://{account}.snowflakecomputing.com/api/v2/statements"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = """
+        SELECT full_name, email, role, is_active
+        FROM MORNINGPULSE_DB.TELEMETRY.MAILING_LIST
+        ORDER BY subscribed_at DESC;
+    """
+    try:
+        res = requests.post(url, headers=headers, json={"statement": sql, "warehouse": "COMPUTE_WH"}, timeout=15)
+        res.raise_for_status()
+        rows = res.json().get("data", [])
+        return [
+            {
+                "full_name": r[0] or "Subscriber",
+                "email": r[1] or "",
+                "role": r[2] or "Team Member",
+                "is_active": str(r[3]).upper() in ["TRUE", "1"],
+            }
+            for r in rows
+            if r
+        ]
+    except Exception as e:
+        st.error(f"Failed to query mailing list from Snowflake: {e}")
+        return []
 
 
 # --- 1. DATA INGESTION & ANOMALY DETECTION ---
@@ -143,8 +226,12 @@ with st.sidebar:
 st.title("☀️ MorningPulse")
 st.caption("Enterprise Telemetry Intelligence · Powered by Snowflake Cortex")
 
-tab_exec, tab_cockpit = st.tabs(
-    ["☀️ Executive Morning Pulse", "📊 Company Cockpit (All 15 Metrics)"]
+tab_exec, tab_cockpit, tab_subscribers = st.tabs(
+    [
+        "☀️ Executive Morning Pulse",
+        "📊 Company Cockpit (All 15 Metrics)",
+        "📬 Mailing List",
+    ]
 )
 
 # ==========================================
@@ -247,7 +334,6 @@ with tab_exec:
                         st.error(f"Failed to send email: {e}")
 
 
-
 # ==========================================
 # TAB 2: COMPANY COCKPIT (ALL 15 CHARTS)
 # ==========================================
@@ -290,3 +376,96 @@ with tab_cockpit:
         with col:
             with st.container(border=True):
                 st.plotly_chart(fig, use_container_width=True)
+
+
+# ==========================================
+# TAB 3: MAILING LIST & DISTRIBUTION DIRECTORY
+# ==========================================
+with tab_subscribers:
+    st.markdown("### 📬 MorningPulse Distribution Directory")
+    st.caption(
+        "Recipients configured in Snowflake to receive the automated 4:15 AM PST executive briefing. "
+        "Email addresses are masked for screen privacy."
+    )
+
+    raw_subscribers = fetch_subscribers_data()
+
+    # Debug line
+    # st.write("DEBUG subscriber row:", raw_subscribers[0] if raw_subscribers else "Empty")
+
+    if raw_subscribers:
+        table_rows = []
+        active_count = 0
+
+        for s in raw_subscribers:
+            is_act = bool(s.get("is_active", True))
+            if is_act:
+                active_count += 1
+
+            raw_email = s.get("Email") or s.get("email", "")
+
+            table_rows.append({
+                "Recipient Name": s.get("Name")
+                or s.get("full_name")
+                or "Subscriber",
+                "Email": mask_email(raw_email),
+                "Team / Role": s.get("Role") or s.get("role") or "Team Member",
+                "Status": "🟢 Active" if is_act else "⚪ Inactive",
+            })
+
+        col_m1, col_m2, _ = st.columns([1, 1, 2])
+        col_m1.metric("Total Subscribers", len(table_rows))
+        col_m2.metric("Active Inboxes", active_count)
+
+        df_display = pd.DataFrame(table_rows)
+        st.dataframe(
+            df_display,
+            column_order=["Recipient Name", "Email", "Team / Role", "Status"],
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.info("No subscribers currently found in the Snowflake `MAILING_LIST` table.")
+
+    st.divider()
+
+    with st.expander("➕ Add or Modify Subscriber"):
+        with st.form("add_subscriber_form", clear_on_submit=True):
+            col_f1, col_f2 = st.columns(2)
+            new_name = col_f1.text_input("Full Name", placeholder="Jane Doe")
+            new_email = col_f2.text_input("Email Address", placeholder="jane@company.com")
+
+            col_f3, col_f4 = st.columns(2)
+            new_role = col_f3.text_input("Team / Role", placeholder="Head of Engineering")
+            new_active = col_f4.selectbox(
+                "Delivery Status",
+                options=[True, False],
+                format_func=lambda x: "Active" if x else "Inactive / Unsubscribed",
+            )
+
+            submit_sub = st.form_submit_button("Save Subscriber to Snowflake", use_container_width=True)
+
+            if submit_sub:
+                if new_email and "@" in new_email:
+                    try:
+                        if upsert_subscriber is not None:
+                            upsert_subscriber(
+                                email=new_email,
+                                full_name=new_name,
+                                role=new_role,
+                                is_active=new_active,
+                            )
+                        else:
+                            from core.brief_generator import upsert_subscriber as live_upsert
+                            live_upsert(
+                                email=new_email,
+                                full_name=new_name,
+                                role=new_role,
+                                is_active=new_active,
+                            )
+                        st.success(f"Saved {new_name or new_email} to Snowflake.")
+                        st.rerun()
+                    except Exception as err:
+                        st.error(f"Failed to update subscriber: {err}")
+                else:
+                    st.warning("Please provide a valid email address.")

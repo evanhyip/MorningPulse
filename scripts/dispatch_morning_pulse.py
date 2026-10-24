@@ -1,140 +1,123 @@
-# scripts/dispatch_morning_pulse.py
 import os
 import markdown
 import resend
 from dotenv import load_dotenv
 
+from core.brief_generator import (
+    generate_executive_brief,
+    get_active_mailing_list,
+    save_brief_to_snowflake,
+)
 from core.detector import detect_today_anomalies
-from core.brief_generator import generate_executive_brief, save_brief_to_snowflake
 
 load_dotenv()
 
 resend.api_key = os.getenv("RESEND_API_KEY")
 SENDER = os.getenv("BRIEFING_SENDER_EMAIL", "onboarding@resend.dev")
-RECIPIENTS = [
-    email.strip()
-    for email in os.getenv("BRIEFING_RECIPIENT_EMAILS", "").split(",")
-    if email.strip()
-]
 
 
-def format_brief_to_html(raw_markdown: str) -> str:
-    """Converts the raw Markdown briefing into a styled enterprise email template."""
-    body_html = markdown.markdown(raw_markdown)
+def format_brief_to_html(brief_markdown: str) -> str:
+    """Converts raw brief markdown into styled, mobile-responsive email HTML."""
+    # Convert markdown with tables, code, and extra formatting
+    raw_html = markdown.markdown(
+        brief_markdown,
+        extensions=["extra", "nl2br", "sane_lists"],
+    )
 
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <style>
-        body {{
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-          background-color: #f9fafb;
-          color: #111827;
-          margin: 0;
-          padding: 24px;
-        }}
-        .card {{
-          max-width: 680px;
-          margin: 0 auto;
-          background: #ffffff;
-          border: 1px solid #e5e7eb;
-          border-radius: 8px;
-          padding: 32px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        }}
-        .header {{
-          border-bottom: 2px solid #f3f4f6;
-          padding-bottom: 16px;
-          margin-bottom: 24px;
-        }}
-        h1 {{
-          font-size: 22px;
-          color: #111827;
-          margin: 0 0 6px 0;
-        }}
-        .subtitle {{
-          font-size: 13px;
-          color: #6b7280;
-          margin: 0;
-        }}
-        h3 {{
-          font-size: 16px;
-          color: #1f2937;
-          margin-top: 24px;
-          border-bottom: 1px solid #f3f4f6;
-          padding-bottom: 4px;
-        }}
-        p, li {{
-          font-size: 14px;
-          line-height: 1.6;
-          color: #374151;
-        }}
-        code {{
-          background: #f3f4f6;
-          padding: 2px 6px;
-          border-radius: 4px;
-          font-size: 13px;
-          color: #b91c1c;
-        }}
-        .footer {{
-          margin-top: 32px;
-          padding-top: 16px;
-          border-top: 1px solid #f3f4f6;
-          font-size: 12px;
-          color: #9ca3af;
-          text-align: center;
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <div class="header">
-          <h1>☀️ MorningPulse · Executive Briefing</h1>
-          <p class="subtitle">Autonomous Telemetry Intelligence · Powered by Snowflake Cortex</p>
-        </div>
-        <div class="content">
-          {body_html}
-        </div>
-        <div class="footer">
-          Delivered autonomously at 9:00 AM UTC. Reply to query the Chief of Staff agent.
-        </div>
-      </div>
-    </body>
-    </html>
-    """
+    # Wrap in email client-safe inline styles
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f6f8; padding: 24px 0;">
+    <tr>
+      <td align="center">
+        <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 640px; background-color: #ffffff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+          <!-- Header -->
+          <tr>
+            <td style="background-color: #0f172a; padding: 20px 28px;">
+              <h1 style="margin: 0; font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.02em;">
+                ☀️ MorningPulse <span style="font-weight: 400; color: #94a3b8; font-size: 14px;">| Daily Executive Brief</span>
+              </h1>
+            </td>
+          </tr>
+          <!-- Body Content -->
+          <tr>
+            <td style="padding: 28px; font-size: 15px; color: #334155;">
+              <style>
+                h2 {{ color: #0f172a; font-size: 18px; margin-top: 24px; margin-bottom: 12px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }}
+                h3 {{ color: #1e293b; font-size: 16px; margin-top: 18px; margin-bottom: 8px; }}
+                p {{ margin: 0 0 14px 0; }}
+                ul, ol {{ margin: 0 0 14px 0; padding-left: 20px; }}
+                li {{ margin-bottom: 6px; }}
+                code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 13px; color: #0f172a; font-family: monospace; }}
+                blockquote {{ border-left: 4px solid #3b82f6; background-color: #eff6ff; margin: 16px 0; padding: 12px 16px; border-radius: 0 4px 4px 0; color: #1e3a8a; }}
+                table {{ width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }}
+                th, td {{ border: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; }}
+                th {{ background-color: #f8fafc; font-weight: 600; color: #0f172a; }}
+              </style>
+              {raw_html}
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8fafc; padding: 16px 28px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #64748b;">
+              Automated telemetry report generated by MorningPulse via Snowflake & Resend.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
 
 
-def send_daily_pulse_email(brief_text: str | None = None) -> dict:
-    """Executes the full generation, persistence, and dispatch pipeline."""
+def send_daily_pulse_email(brief_text: str | None = None) -> list[dict]:
+    """Generates the brief, commits to Snowflake, and delivers formatted email to all subscribers."""
     if not resend.api_key:
         raise ValueError("RESEND_API_KEY is not defined in your environment.")
-    if not RECIPIENTS:
-        raise ValueError("BRIEFING_RECIPIENT_EMAILS is not defined in your environment.")
 
-    # Generate if not provided
+    # 1. Fetch active subscribers from Snowflake
+    print("1/4 Loading recipient list from Snowflake MAILING_LIST...")
+    recipients = get_active_mailing_list()
+    if not recipients:
+        raise ValueError("No active recipients found in Snowflake MAILING_LIST.")
+
+    # 2. Generate brief if not already in memory
     if not brief_text:
-        print("1/3 Detecting telemetry anomalies...")
+        print("2/4 Detecting telemetry anomalies...")
         anomalies = detect_today_anomalies()
-        print("2/3 Generating Cortex executive brief...")
+        print("3/4 Generating Cortex executive brief...")
         brief_text = generate_executive_brief(anomalies=anomalies)
 
-    # Save to Snowflake persistence table
-    print("3/3 Committing brief to Snowflake DAILY_BRIEFS...")
+    # 3. Commit brief to Snowflake DAILY_BRIEFS table
+    print("4/4 Committing brief to Snowflake DAILY_BRIEFS...")
     save_brief_to_snowflake(brief_text=brief_text, sent_via_email=True)
 
-    # Render HTML and send via Resend
+    # 4. Generate formatted HTML
     html_content = format_brief_to_html(brief_text)
-    response = resend.Emails.send({
-        "from": f"MorningPulse <{SENDER}>",
-        "to": RECIPIENTS,
-        "subject": "☀️ MorningPulse: Daily Executive Incident & Telemetry Briefing",
-        "html": html_content,
-    })
 
-    print(f"✅ Dispatched daily email to {RECIPIENTS}. Resend ID: {response.get('id')}")
-    return response
+    # 5. Send individually so recipients don't expose each other's emails
+    send_responses = []
+    print(f"Delivering brief to {len(recipients)} recipient(s)...")
+    for email in recipients:
+        try:
+            resp = resend.Emails.send({
+                "from": f"MorningPulse <{SENDER}>",
+                "to": [email],
+                "subject": "☀️ MorningPulse: Daily Executive Incident & Telemetry Briefing",
+                "html": html_content,
+            })
+            send_responses.append(resp)
+            print(f"  ✅ Sent to {email} (ID: {resp.get('id')})")
+        except Exception as e:
+            print(f"  ❌ Failed to send to {email}: {e}")
+
+    return send_responses
 
 
 if __name__ == "__main__":
