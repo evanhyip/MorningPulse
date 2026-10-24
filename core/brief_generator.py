@@ -2,8 +2,8 @@ import json
 import os
 import requests
 from dotenv import load_dotenv
-from detector import detect_today_anomalies
-from logs import get_recent_system_events
+from core.detector import detect_today_anomalies
+from core.logs import get_recent_system_events
 
 load_dotenv()
 
