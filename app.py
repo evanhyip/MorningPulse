@@ -132,6 +132,42 @@ def fetch_subscribers_data() -> list[dict]:
         st.error(f"Failed to query mailing list from Snowflake: {e}")
         return []
 
+def delete_subscriber_from_snowflake(email: str) -> bool:
+    """Deletes a subscriber from Snowflake MAILING_LIST by email."""
+    try:
+        from core.brief_generator import delete_subscriber
+        return delete_subscriber(email)
+    except (ImportError, AttributeError):
+        pass
+
+    account = os.getenv("SNOWFLAKE_ACCOUNT")
+    token = os.getenv("SNOWFLAKE_TOKEN")
+    db = os.getenv("SNOWFLAKE_DATABASE", "MORNINGPULSE_DB").strip(' "\'')
+    schema = os.getenv("SNOWFLAKE_SCHEMA", "TELEMETRY").strip(' "\'')
+    warehouse = os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH").strip(' "\'')
+
+    if not account or not token or not email:
+        return False
+
+    clean_email = email.strip().lower().replace("'", "''")
+    url = f"https://{account}.snowflakecomputing.com/api/v2/statements"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = f"""
+        DELETE FROM "{db}"."{schema}"."MAILING_LIST"
+        WHERE LOWER(email) = '{clean_email}';
+    """
+    try:
+        res = requests.post(url, headers=headers, json={"statement": sql, "warehouse": warehouse}, timeout=15)
+        res.raise_for_status()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete subscriber: {e}")
+        return False
+
 
 # --- 1. DATA INGESTION & ANOMALY DETECTION ---
 @st.cache_data(ttl=600)
@@ -472,3 +508,32 @@ with tab_subscribers:
                         st.error(f"Failed to update subscriber: {err}")
                 else:
                     st.warning("Please provide a valid email address.")
+
+
+    with st.expander("🗑️ Remove Subscriber"):
+        if raw_subscribers:
+            # Map formatted label (Name + Masked Email) to the actual raw email
+            sub_options = {
+                f"{s.get('full_name') or s.get('Name') or 'Subscriber'} ({mask_email(s.get('email') or s.get('Email', ''))})": (s.get('email') or s.get('Email', ''))
+                for s in raw_subscribers
+                if (s.get('email') or s.get('Email'))
+            }
+
+            with st.form("delete_subscriber_form", clear_on_submit=True):
+                selected_label = st.selectbox(
+                    "Select Recipient to Delete",
+                    options=list(sub_options.keys()),
+                )
+                submit_delete = st.form_submit_button(
+                    "🗑️ Delete Subscriber from Snowflake",
+                    use_container_width=True,
+                )
+
+                if submit_delete and selected_label:
+                    target_email = sub_options[selected_label]
+                    success = delete_subscriber_from_snowflake(target_email)
+                    if success:
+                        st.success(f"Removed {selected_label} from distribution list.")
+                        st.rerun()
+        else:
+            st.caption("No subscribers available to remove.")
