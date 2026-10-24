@@ -244,3 +244,29 @@ def save_brief_to_snowflake(
 
     res = requests.post(url, headers=headers, json=payload, timeout=30)
     res.raise_for_status()
+
+    prune_old_cached_briefs(retention_days=10)
+
+
+
+def prune_old_cached_briefs(retention_days: int = 30) -> None:
+    """Deletes briefs older than the specified retention window to keep storage lean."""
+    url = (
+        f"https://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/api/v2/statements"
+    )
+    headers = {
+        "Authorization": f"Bearer {SNOWFLAKE_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    sql = f"""
+        DELETE FROM MORNINGPULSE_DB.TELEMETRY.DAILY_BRIEFS
+        WHERE brief_date < DATEADD('day', -{retention_days}, CURRENT_DATE());
+    """
+    payload = {"statement": sql, "warehouse": "COMPUTE_WH"}
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"Warning: Failed to prune old briefs from Snowflake: {e}")
