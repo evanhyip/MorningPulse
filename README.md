@@ -72,8 +72,8 @@ morningpulse/
 Clone the repository and set up a virtual environment:
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/morningpulse.git](https://github.com/YOUR_USERNAME/morningpulse.git)
-cd morningpulse
+git clone [https://github.com/YOUR_USERNAME/MorningPulse.git](https://github.com/YOUR_USERNAME/MorningPulse.git)
+cd MorningPulse
 
 python3 -m venv venv
 source venv/bin/activate  # On Windows: .\venv\Scripts\activate
