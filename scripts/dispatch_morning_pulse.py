@@ -8,7 +8,7 @@ from core.brief_generator import (
     get_active_mailing_list,
     save_brief_to_snowflake,
 )
-from core.detector import detect_today_anomalies
+from core.detector import detect_today_anomalies, fetch_telemetry_from_snowflake
 
 load_dotenv()
 
@@ -90,7 +90,8 @@ def send_daily_pulse_email(brief_text: str | None = None) -> list[dict]:
     # 2. Generate brief if not already in memory
     if not brief_text:
         print("2/4 Detecting telemetry anomalies...")
-        anomalies = detect_today_anomalies()
+        df = fetch_telemetry_from_snowflake()   # <-- Pulls and normalizes the 14-day DataFrame
+        anomalies = detect_today_anomalies(df)
         print("3/4 Generating Cortex executive brief...")
         brief_text = generate_executive_brief(anomalies=anomalies)
 
